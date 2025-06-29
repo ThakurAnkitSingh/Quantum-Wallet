@@ -42,6 +42,21 @@ export class WalletManager {
   private static instance: WalletManager; // Static instance for Singleton pattern
   private accounts: WalletAccount[] = []; // Stores all wallet accounts
   private transactions: Transaction[] = []; // Stores all transactions
+  
+  // Provider instances for reuse
+  private ethereumProvider: ethers.JsonRpcProvider;
+  private solanaConnection: Connection;
+
+  // Private constructor to initialize providers
+  private constructor() {
+    this.ethereumProvider = new ethers.JsonRpcProvider(
+      "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161"
+    );
+    this.solanaConnection = new Connection(
+      "https://api.devnet.solana.com",
+      "confirmed"
+    );
+  }
 
   // Returns the singleton instance of WalletManager
   static getInstance(): WalletManager {
@@ -82,34 +97,16 @@ export class WalletManager {
     console.log(
       `Creating ${blockchain} account: ${name} at index ${accountIndex}`
     );
-    console.log(`Current accounts count: ${this.accounts.length}`);
 
-    // More thorough duplicate checking
-    // Check if account with same blockchain and index already exists
-    const existingAccountByIndex = this.accounts.find(
-      (acc) =>
-        acc.blockchain === blockchain &&
-        acc.id === `${blockchain}-${accountIndex}`
-    );
-
-    if (existingAccountByIndex) {
-      console.error(
-        `Account with blockchain ${blockchain} and index ${accountIndex} already exists`
-      );
+    // Check for duplicates
+    const accountId = `${blockchain}-${accountIndex}`;
+    if (this.accounts.some(acc => acc.id === accountId)) {
       throw new Error(
         `Account with blockchain ${blockchain} and index ${accountIndex} already exists`
       );
     }
 
-    // Check if account with same name already exists
-    const existingAccountByName = this.accounts.find(
-      (acc) => acc.blockchain === blockchain && acc.name === name
-    );
-
-    if (existingAccountByName) {
-      console.error(
-        `Account with name ${name} for ${blockchain} already exists`
-      );
+    if (this.accounts.some(acc => acc.blockchain === blockchain && acc.name === name)) {
       throw new Error(
         `Account with name "${name}" for ${blockchain} already exists`
       );
@@ -120,56 +117,75 @@ export class WalletManager {
     // Create HD wallet root node from seed
     const hdNode = BIP32Factory(ecc).fromSeed(seed);
 
-    let address: string;
-    let privateKey: string;
-    let publicKey: string;
-    let derivationPath: string;
+    let account: WalletAccount;
 
     if (blockchain === "ethereum") {
-      // For Ethereum accounts, use BIP44 path with coin type 60
-      derivationPath = `m/44'/60'/0'/0/${accountIndex}`;
-      const ethNode = hdNode.derivePath(derivationPath); // Derive the specific account node
-      privateKey = Buffer.from(ethNode.privateKey!).toString("hex"); // Convert private key to hex
-      const ethWallet = new ethers.Wallet(`0x${privateKey}`); // Create Ethereum wallet
-      address = ethWallet.address; // Get Ethereum address
-      publicKey = ethWallet.address; // For Ethereum, public key is same as address
+      account = await this.createEthereumAccount(name, mnemonic, hdNode, accountIndex);
     } else {
-      // For Solana accounts, use BIP44 path with coin type 501
-      derivationPath = `m/44'/501'/0'/0'/${accountIndex}'`;
-      const solNode = hdNode.derivePath(derivationPath); // Derive the specific account node
-
-      // Create Solana keypair from the derived private key
-      const privateKeyBytes = solNode.privateKey!;
-      const keypair = Keypair.fromSeed(Uint8Array.from(privateKeyBytes));
-
-      // Store just the 32-byte private key as hex
-      privateKey = Buffer.from(privateKeyBytes).toString("hex");
-      address = keypair.publicKey.toString(); // Get Solana address
-      publicKey = keypair.publicKey.toString(); // Get Solana public key
-
-      console.log(
-        "Created Solana keypair with public key:",
-        keypair.publicKey.toString()
-      );
+      account = await this.createSolanaAccount(name, mnemonic, hdNode, accountIndex);
     }
 
-    // Create the account object with all necessary information
-    const account: WalletAccount = {
-      id: `${blockchain}-${accountIndex}`, // Create unique ID
+    this.accounts.push(account); // Add to accounts array
+    console.log(`Account created: ${account.id} - ${account.address}`);
+    return account;
+  }
+
+  // Helper method to create Ethereum account
+  private async createEthereumAccount(
+    name: string,
+    mnemonic: string,
+    hdNode: any,
+    accountIndex: number
+  ): Promise<WalletAccount> {
+    // For Ethereum accounts, use BIP44 path with coin type 60
+    const derivationPath = `m/44'/60'/0'/0/${accountIndex}`;
+    const ethNode = hdNode.derivePath(derivationPath);
+    const privateKey = Buffer.from(ethNode.privateKey!).toString("hex");
+    const ethWallet = new ethers.Wallet(`0x${privateKey}`);
+    
+    return {
+      id: `ethereum-${accountIndex}`,
       name,
-      blockchain,
-      address,
+      blockchain: "ethereum",
+      address: ethWallet.address,
       privateKey,
-      publicKey,
-      balance: "0", // Initialize with zero balance
+      publicKey: ethWallet.address,
+      balance: "0",
       mnemonic,
       derivationPath,
     };
+  }
 
-    console.log(`Account created: ${account.id} - ${account.address}`);
-    this.accounts.push(account); // Add to accounts array
-    console.log(`Total accounts after creation: ${this.accounts.length}`);
-    return account;
+  // Helper method to create Solana account
+  private async createSolanaAccount(
+    name: string,
+    mnemonic: string,
+    hdNode: any,
+    accountIndex: number
+  ): Promise<WalletAccount> {
+    // For Solana accounts, use BIP44 path with coin type 501
+    const derivationPath = `m/44'/501'/0'/0'/${accountIndex}'`;
+    const solNode = hdNode.derivePath(derivationPath);
+    
+    // Create Solana keypair from the derived private key
+    const privateKeyBytes = solNode.privateKey!;
+    const keypair = Keypair.fromSeed(Uint8Array.from(privateKeyBytes));
+    
+    // Store just the 32-byte private key as hex
+    const privateKey = Buffer.from(privateKeyBytes).toString("hex");
+    const address = keypair.publicKey.toString();
+    
+    return {
+      id: `solana-${accountIndex}`,
+      name,
+      blockchain: "solana",
+      address,
+      privateKey,
+      publicKey: address,
+      balance: "0",
+      mnemonic,
+      derivationPath,
+    };
   }
 
   // Returns all wallet accounts
@@ -186,23 +202,14 @@ export class WalletManager {
   async getBalance(account: WalletAccount): Promise<string> {
     try {
       if (account.blockchain === "ethereum") {
-        // For Ethereum, connect to Sepolia testnet via Infura
-        const provider = new ethers.JsonRpcProvider(
-          "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161"
-        );
         // Get balance in wei
-        const balance = await provider.getBalance(account.address);
+        const balance = await this.ethereumProvider.getBalance(account.address);
         // Convert wei to ether and return
         return ethers.formatEther(balance);
       } else {
-        // For Solana, connect to devnet
-        const connection = new Connection(
-          "https://api.devnet.solana.com",
-          "confirmed"
-        );
         const publicKey = new PublicKey(account.address);
         // Get balance in lamports
-        const balance = await connection.getBalance(publicKey);
+        const balance = await this.solanaConnection.getBalance(publicKey);
         // Convert lamports to SOL and return
         return (balance / LAMPORTS_PER_SOL).toString();
       }
@@ -255,105 +262,9 @@ export class WalletManager {
 
     try {
       if (fromAccount.blockchain === "ethereum") {
-        // For Ethereum transactions
-        const provider = new ethers.JsonRpcProvider(
-          "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161"
-        );
-
-        // Create wallet with private key and provider
-        const wallet = new ethers.Wallet(
-          `0x${fromAccount.privateKey}`,
-          provider
-        );
-
-        // Check if account has sufficient balance
-        const balance = await provider.getBalance(fromAccount.address);
-        const amountWei = ethers.parseEther(amount); // Convert ETH to wei
-
-        if (balance < amountWei) {
-          throw new Error("Insufficient balance");
-        }
-
-        // Send the transaction
-        const tx = await wallet.sendTransaction({
-          to: toAddress,
-          value: amountWei,
-        });
-
-        console.log(`Ethereum transaction sent: ${tx.hash}`);
-        transaction.hash = tx.hash;
-
-        // Wait for transaction confirmation
-        const receipt = await tx.wait();
-        transaction.status = receipt ? "confirmed" : "failed";
+        await this.sendEthereumTransaction(fromAccount, toAddress, amount, transaction);
       } else {
-        // For Solana transactions
-        const connection = new Connection(
-          "https://api.devnet.solana.com",
-          "confirmed"
-        );
-
-        // Create public keys for sender and recipient
-        const fromPubkey = new PublicKey(fromAccount.address);
-        const toPubkey = new PublicKey(toAddress);
-
-        // Create keypair from private key for signing
-        let keypair;
-        try {
-          // Convert the hex private key to Uint8Array
-          const privateKeyBytes = Uint8Array.from(
-            Buffer.from(fromAccount.privateKey, "hex")
-          );
-
-          // Create keypair from seed (private key)
-          keypair = Keypair.fromSeed(privateKeyBytes);
-
-          // Verify the keypair matches our address
-          if (keypair.publicKey.toString() !== fromAccount.address) {
-            throw new Error("Derived keypair doesn't match account address");
-          }
-
-          // Check if account has sufficient balance
-          const balance = await connection.getBalance(fromPubkey);
-          const lamports = parseFloat(amount) * LAMPORTS_PER_SOL; // Convert SOL to lamports
-
-          if (balance < lamports) {
-            throw new Error("Insufficient balance");
-          }
-
-          // Create Solana transaction for token transfer
-          const solTransaction = new SolanaTransaction().add(
-            SystemProgram.transfer({
-              fromPubkey,
-              toPubkey,
-              lamports: Math.floor(lamports),
-            })
-          );
-
-          // Get recent blockhash for transaction validity window
-          const { blockhash } = await connection.getLatestBlockhash();
-          solTransaction.recentBlockhash = blockhash;
-          solTransaction.feePayer = fromPubkey; // Set fee payer
-
-          // Sign and send transaction
-          const signature = await connection.sendTransaction(solTransaction, [
-            keypair,
-          ]);
-
-          console.log(`Solana transaction sent: ${signature}`);
-          transaction.hash = signature;
-
-          // Confirm transaction
-          const confirmation = await connection.confirmTransaction(signature);
-          transaction.status = confirmation.value.err ? "failed" : "confirmed";
-        } catch (error) {
-          console.error("Error creating Solana keypair:", error);
-          throw new Error(
-            `Failed to create Solana keypair: ${
-              error instanceof Error ? error.message : "Unknown error"
-            }`
-          );
-        }
+        await this.sendSolanaTransaction(fromAccount, toAddress, amount, transaction);
       }
 
       this.transactions.push(transaction); // Add to transactions array
@@ -368,6 +279,100 @@ export class WalletManager {
       this.transactions.push(transaction); // Still store failed transactions
       throw error; // Re-throw for caller to handle
     }
+  }
+
+  // Helper method for Ethereum transactions
+  private async sendEthereumTransaction(
+    fromAccount: WalletAccount,
+    toAddress: string,
+    amount: string,
+    transaction: Transaction
+  ): Promise<void> {
+    // Create wallet with private key and provider
+    const wallet = new ethers.Wallet(
+      `0x${fromAccount.privateKey}`,
+      this.ethereumProvider
+    );
+
+    // Check if account has sufficient balance
+    const balance = await this.ethereumProvider.getBalance(fromAccount.address);
+    const amountWei = ethers.parseEther(amount); // Convert ETH to wei
+
+    if (balance < amountWei) {
+      throw new Error("Insufficient balance");
+    }
+
+    // Send the transaction
+    const tx = await wallet.sendTransaction({
+      to: toAddress,
+      value: amountWei,
+    });
+
+    console.log(`Ethereum transaction sent: ${tx.hash}`);
+    transaction.hash = tx.hash;
+
+    // Wait for transaction confirmation
+    const receipt = await tx.wait();
+    transaction.status = receipt ? "confirmed" : "failed";
+  }
+
+  // Helper method for Solana transactions
+  private async sendSolanaTransaction(
+    fromAccount: WalletAccount,
+    toAddress: string,
+    amount: string,
+    transaction: Transaction
+  ): Promise<void> {
+    // Create public keys for sender and recipient
+    const fromPubkey = new PublicKey(fromAccount.address);
+    const toPubkey = new PublicKey(toAddress);
+
+    // Convert the hex private key to Uint8Array
+    const privateKeyBytes = Uint8Array.from(
+      Buffer.from(fromAccount.privateKey, "hex")
+    );
+
+    // Create keypair from seed (private key)
+    const keypair = Keypair.fromSeed(privateKeyBytes);
+
+    // Verify the keypair matches our address
+    if (keypair.publicKey.toString() !== fromAccount.address) {
+      throw new Error("Derived keypair doesn't match account address");
+    }
+
+    // Check if account has sufficient balance
+    const balance = await this.solanaConnection.getBalance(fromPubkey);
+    const lamports = parseFloat(amount) * LAMPORTS_PER_SOL; // Convert SOL to lamports
+
+    if (balance < lamports) {
+      throw new Error("Insufficient balance");
+    }
+
+    // Create Solana transaction for token transfer
+    const solTransaction = new SolanaTransaction().add(
+      SystemProgram.transfer({
+        fromPubkey,
+        toPubkey,
+        lamports: Math.floor(lamports),
+      })
+    );
+
+    // Get recent blockhash for transaction validity window
+    const { blockhash } = await this.solanaConnection.getLatestBlockhash();
+    solTransaction.recentBlockhash = blockhash;
+    solTransaction.feePayer = fromPubkey; // Set fee payer
+
+    // Sign and send transaction
+    const signature = await this.solanaConnection.sendTransaction(solTransaction, [
+      keypair,
+    ]);
+
+    console.log(`Solana transaction sent: ${signature}`);
+    transaction.hash = signature;
+
+    // Confirm transaction
+    const confirmation = await this.solanaConnection.confirmTransaction(signature);
+    transaction.status = confirmation.value.err ? "failed" : "confirmed";
   }
 
   // Returns transactions, optionally filtered by account ID
@@ -392,23 +397,17 @@ export class WalletManager {
     }
 
     try {
-      // Connect to Solana devnet
-      const connection = new Connection(
-        "https://api.devnet.solana.com",
-        "confirmed"
-      );
-
       // Create public key from account address
       const publicKey = new PublicKey(account.address);
 
       // Request airdrop (amount in SOL, converted to lamports)
-      const signature = await connection.requestAirdrop(
+      const signature = await this.solanaConnection.requestAirdrop(
         publicKey,
         amount * LAMPORTS_PER_SOL
       );
 
       // Confirm transaction
-      await connection.confirmTransaction(signature);
+      await this.solanaConnection.confirmTransaction(signature);
 
       // Update account balance
       account.balance = await this.getBalance(account);
