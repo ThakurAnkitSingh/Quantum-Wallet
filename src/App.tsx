@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { WalletManager, WalletAccount, Transaction } from './utils/wallet';
 import { Wallet, Plus, Send, History, Copy, Eye, EyeOff, Download } from 'lucide-react';
 
@@ -26,15 +26,15 @@ function App() {
   // Add debounce ref
   const isProcessingRef = useRef(false);
 
+  const loadAccounts = useCallback(() => {
+    setAccounts(walletManager.getAccounts());
+  }, [walletManager]);
+
   useEffect(() => {
     loadAccounts();
-  }, []);
+  }, [loadAccounts]);
 
-  const loadAccounts = () => {
-    setAccounts(walletManager.getAccounts());
-  };
-
-  const createAccount = async () => {
+  const createAccount = useCallback(async () => {
     // Prevent multiple rapid calls
     if (isCreatingAccount || !newAccountName.trim() || isProcessingRef.current) return;
     
@@ -59,7 +59,7 @@ function App() {
       console.log(`Creating ${newAccountBlockchain} account: ${newAccountName} at index ${accountIndex}`);
       
       const mnemonic = await walletManager.generateMnemonic();
-      const account = await walletManager.createAccount(
+      await walletManager.createAccount(
         newAccountName,
         newAccountBlockchain,
         mnemonic,
@@ -67,7 +67,7 @@ function App() {
       );
       
       // Refresh accounts list instead of appending
-      setAccounts(walletManager.getAccounts());
+      loadAccounts();
       setShowCreateAccount(false);
       setNewAccountName('');
       setNewAccountBlockchain('ethereum');
@@ -81,9 +81,9 @@ function App() {
         isProcessingRef.current = false;
       }, 1000);
     }
-  };
+  }, [accounts, isCreatingAccount, loadAccounts, newAccountBlockchain, newAccountName, walletManager]);
 
-  const sendTransaction = async () => {
+  const sendTransaction = useCallback(async () => {
     if (!selectedAccount || isSendingTransaction) return;
     
     setIsSendingTransaction(true);
@@ -108,29 +108,29 @@ function App() {
     } finally {
       setIsSendingTransaction(false);
     }
-  };
+  }, [isSendingTransaction, loadAccounts, selectedAccount, sendAmount, sendToAddress, walletManager]);
 
-  const copyToClipboard = (text: string) => {
+  const copyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
-  };
+  }, []);
 
-  const togglePrivateKey = (accountId: string) => {
+  const togglePrivateKey = useCallback((accountId: string) => {
     setShowPrivateKey(prev => ({
       ...prev,
       [accountId]: !prev[accountId]
     }));
-  };
+  }, []);
 
-  const getBlockchainIcon = (blockchain: string) => {
+  const getBlockchainIcon = useCallback((blockchain: string) => {
     return blockchain === 'ethereum' ? '🔷' : '🟣';
-  };
+  }, []);
 
-  const getBlockchainName = (blockchain: string) => {
+  const getBlockchainName = useCallback((blockchain: string) => {
     return blockchain === 'ethereum' ? 'Ethereum' : 'Solana';
-  };
+  }, []);
 
   // Add this function to validate address format
-  const validateAddress = (address: string, blockchain: 'ethereum' | 'solana') => {
+  const validateAddress = useCallback((address: string, blockchain: 'ethereum' | 'solana') => {
     if (!address) {
       setAddressError('');
       return;
@@ -149,9 +149,9 @@ function App() {
         setAddressError('');
       }
     }
-  };
+  }, []);
 
-  const requestSolanaAirdrop = async () => {
+  const requestSolanaAirdrop = useCallback(async () => {
     if (!selectedAccount || selectedAccount.blockchain !== 'solana' || isRequestingAirdrop) return;
     
     setIsRequestingAirdrop(true);
@@ -167,9 +167,9 @@ function App() {
     } finally {
       setIsRequestingAirdrop(false);
     }
-  };
+  }, [isRequestingAirdrop, loadAccounts, selectedAccount, walletManager]);
 
-  const requestEthereumAirdrop = async () => {
+  const requestEthereumAirdrop = useCallback(async () => {
     if (!selectedAccount || selectedAccount.blockchain !== 'ethereum' || isRequestingAirdrop) return;
     
     setIsRequestingAirdrop(true);
@@ -188,7 +188,13 @@ function App() {
     } finally {
       setIsRequestingAirdrop(false);
     }
-  };
+  }, [isRequestingAirdrop, loadAccounts, selectedAccount, walletManager]);
+
+  // Memoize filtered transactions
+  const filteredTransactions = useMemo(() => {
+    if (!selectedAccount) return [];
+    return transactions.filter(tx => tx.from === selectedAccount.address);
+  }, [selectedAccount, transactions]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -374,33 +380,31 @@ function App() {
                   </div>
                   
                   <div className="space-y-3">
-                    {transactions
-                      .filter(tx => tx.from === selectedAccount.address)
-                      .map((transaction) => (
-                        <div key={transaction.id} className="p-4 border border-gray-200 rounded-lg">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-medium text-gray-900">
-                                Sent {transaction.amount} {transaction.blockchain === 'ethereum' ? 'ETH' : 'SOL'}
-                              </p>
-                              <p className="text-sm text-gray-500">To: {transaction.to.slice(0, 6)}...{transaction.to.slice(-4)}</p>
-                            </div>
-                            <div className="text-right">
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                transaction.status === 'confirmed' ? 'bg-green-100 text-green-800' :
-                                transaction.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                                'bg-red-100 text-red-800'
-                              }`}>
-                                {transaction.status}
-                              </span>
-                              <p className="text-xs text-gray-500 mt-1">
-                                {new Date(transaction.timestamp).toLocaleDateString()}
-                              </p>
-                            </div>
+                    {filteredTransactions.map((transaction) => (
+                      <div key={transaction.id} className="p-4 border border-gray-200 rounded-lg">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium text-gray-900">
+                              Sent {transaction.amount} {transaction.blockchain === 'ethereum' ? 'ETH' : 'SOL'}
+                            </p>
+                            <p className="text-sm text-gray-500">To: {transaction.to.slice(0, 6)}...{transaction.to.slice(-4)}</p>
+                          </div>
+                          <div className="text-right">
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              transaction.status === 'confirmed' ? 'bg-green-100 text-green-800' :
+                              transaction.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                              'bg-red-100 text-red-800'
+                            }`}>
+                              {transaction.status}
+                            </span>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {new Date(transaction.timestamp).toLocaleDateString()}
+                            </p>
                           </div>
                         </div>
-                      ))}
-                    {transactions.filter(tx => tx.from === selectedAccount.address).length === 0 && (
+                      </div>
+                    ))}
+                    {filteredTransactions.length === 0 && (
                       <p className="text-gray-500 text-center py-8">No transactions yet</p>
                     )}
                   </div>
